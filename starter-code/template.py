@@ -9,6 +9,12 @@ Instructions:
     4. Run: pytest tests/ -v
 """
 
+# fill env variables in .env file with your API keys before running tests
+import traceback
+
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
+
 import os
 import time
 from typing import Any, Callable
@@ -21,6 +27,7 @@ PRICING_1M_TOKENS = {
     "gpt-4o": {"input": 5.00, "output": 20.00},
     "gpt-4o-mini": {"input": 0.150, "output": 0.600},
     "gemini-2.5-flash": {"input": 0.075, "output": 0.300},
+    "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.5},
     "gemini-2.5-pro": {"input": 1.25, "output": 5.00},
     "claude-3-5-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3-5-haiku": {"input": 0.80, "output": 4.00},
@@ -29,7 +36,7 @@ PRICING_1M_TOKENS = {
 # Standard Model Identifiers
 OPENAI_MODEL = "gpt-4o"
 OPENAI_MINI_MODEL = "gpt-4o-mini"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
 ANTHROPIC_MODEL = "claude-3-5-haiku"
 
 
@@ -113,9 +120,30 @@ def call_gemini(
         Ensure your usage dictionary extracts 'input_tokens' and 'output_tokens' 
         from the response metadata (e.g. response.usage_metadata).
     """
-    # TODO: Initialize Gemini client, set config parameters, call generate_content,
-    #       measure latency, extract response text and usage metadata, and return the tuple.
-    raise NotImplementedError("Implement call_gemini")
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+    # config
+    types_config = types.GenerateContentConfig(
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_tokens
+    )
+
+    # timing
+    start_time = time.time()
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types_config
+    )
+    latency_seconds = time.time() - start_time
+
+    return response.text, latency_seconds, {
+        "input_tokens": response.usage_metadata.prompt_token_count,
+        "output_tokens": response.usage_metadata.candidates_token_count
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +208,19 @@ def compare_models(prompt: str) -> dict:
     # TODO: Calculate costs exactly based on input and output token counts using PRICING_1M_TOKENS
     #       Formula: Cost = (input_tokens * input_rate_per_1M + output_tokens * output_rate_per_1M) / 1,000,000
     # TODO: Assemble and return the comparison dictionary.
+
+    response_gemini, latency_gemini, usage_gemini = call_gemini(prompt)
+
+    return {
+        "gemini_flash": {
+            "response": response_gemini,
+            "latency": latency_gemini,
+            "cost": usage_gemini["input_tokens"] * PRICING_1M_TOKENS["gemini-3.1-flash-lite"]["input"] / 1_000_000 +
+                    usage_gemini["output_tokens"] * PRICING_1M_TOKENS["gemini-3.1-flash-lite"]["output"] / 1_000_000,
+            "input_tokens": usage_gemini["input_tokens"],
+            "output_tokens": usage_gemini["output_tokens"]
+        },
+    }
     raise NotImplementedError("Implement compare_models")
 
 
@@ -200,8 +241,26 @@ def streaming_chatbot() -> None:
         - Check how to stream responses using client.chats or model.generate_content(..., stream=True).
         - Keep history limited to the last 3 turns to optimize context window and costs.
     """
-    # TODO: Setup interactive session, prompt user for input, stream response, and update history.
-    raise NotImplementedError("Implement streaming_chatbot")
+
+    # Set up gemini client for streaming
+    from google import genai
+
+    client = genai.Client()
+    chat = client.chats.create(model=GEMINI_MODEL)
+
+    while True:
+        user_input = input("\nYou: ")
+
+        if user_input.lower() in {"quit", "exit"}:
+            print("Exiting chatbot. Goodbye!")
+            break
+
+        response = chat.send_message_stream(user_input)
+
+        for chunk in response:
+            print(chunk.text, end="", flush=True)
+
+        chat.history = chat.get_history()[-6:]
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +341,7 @@ if __name__ == "__main__":
             print(f"Tokens: {stats['input_tokens']} in / {stats['output_tokens']} out")
             print(f"Response: {stats['response']}")
     except Exception as e:
+        traceback.print_exc()
         print(f"Skipping live API comparison test: {e}")
         print("Set your API keys to run manual tests.")
 
@@ -289,4 +349,5 @@ if __name__ == "__main__":
     try:
         streaming_chatbot()
     except Exception as e:
+        traceback.print_exc()
         print(f"Chatbot failed to start: {e}")
